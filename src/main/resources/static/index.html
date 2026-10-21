@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ThreadPulse — Multithreading Visualizer</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Vue 3 CDN -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Plus Jakarta Sans', sans-serif; }
+    code, pre, .font-mono { font-family: 'JetBrains Mono', monospace; }
+    @keyframes pulse-subtle {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(0.98); }
+    }
+    .anim-pulse { animation: pulse-subtle 2s infinite ease-in-out; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div id="app" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    
+    <!-- Top Header -->
+    <header class="flex flex-col md:flex-row md:items-center md:justify-between pb-6 border-b border-slate-800 gap-4">
+      <div>
+        <div class="flex items-center gap-3">
+          <div class="w-3.5 h-3.5 rounded-full bg-emerald-400 animate-ping"></div>
+          <h1 class="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400 bg-clip-text text-transparent">
+            ThreadPulse Visualizer
+          </h1>
+          <span class="text-xs px-2.5 py-1 rounded-full bg-slate-800 border border-slate-700 text-slate-300 font-mono">
+            Spring Boot 3 + Vue 3
+          </span>
+        </div>
+        <p class="text-slate-400 text-sm mt-1">
+          Explore Java ThreadPoolTaskExecutor, worker threads, waiting queues, and task rejection in real-time.
+        </p>
+      </div>
+
+      <!-- Connection Status -->
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs">
+          <span class="w-2.5 h-2.5 rounded-full" :class="connected ? 'bg-emerald-500' : 'bg-rose-500'"></span>
+          <span class="text-slate-300 font-medium">{{ connected ? 'SSE Stream Active' : 'Disconnected (Retrying...)' }}</span>
+        </div>
+        <button @click="resetStats" 
+                class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
+          Reset Counts
+        </button>
+        <button @click="clearFinishedTasks" 
+                class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition">
+          Clear Finished
+        </button>
+      </div>
+    </header>
+
+    <!-- Thread Pool Architecture Diagram / Explainer -->
+    <section class="my-6 bg-slate-900/60 border border-slate-800/80 rounded-xl p-4 sm:p-5">
+      <div class="flex items-center justify-between mb-3 cursor-pointer" @click="showDocs = !showDocs">
+        <div class="flex items-center gap-2">
+          <span class="text-emerald-400 text-sm font-semibold uppercase tracking-wider">How Java Thread Pool Works</span>
+          <span class="text-xs text-slate-400">({{ showDocs ? 'Click to collapse' : 'Click to expand' }})</span>
+        </div>
+        <span class="text-slate-400 text-xs">{{ showDocs ? '▲' : '▼' }}</span>
+      </div>
+
+      <div v-show="showDocs" class="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs mt-3 pt-3 border-t border-slate-800">
+        <div class="p-3 bg-slate-950/70 border border-slate-800/80 rounded-lg">
+          <span class="font-bold text-emerald-400 block mb-1">1. Core Pool (2)</span>
+          <p class="text-slate-400">Incoming tasks are assigned immediately to available core threads.</p>
+        </div>
+        <div class="p-3 bg-slate-950/70 border border-slate-800/80 rounded-lg">
+          <span class="font-bold text-amber-400 block mb-1">2. Work Queue (Cap: 4)</span>
+          <p class="text-slate-400">If core threads are busy, new tasks wait in the internal queue.</p>
+        </div>
+        <div class="p-3 bg-slate-950/70 border border-slate-800/80 rounded-lg">
+          <span class="font-bold text-cyan-400 block mb-1">3. Max Pool (Max: 4)</span>
+          <p class="text-slate-400">If the queue fills up, extra threads (up to 4) are spawned to handle the burst.</p>
+        </div>
+        <div class="p-3 bg-slate-950/70 border border-slate-800/80 rounded-lg">
+          <span class="font-bold text-rose-400 block mb-1">4. Rejection Policy</span>
+          <p class="text-slate-400">If queue is full AND all 4 threads are occupied, tasks are rejected by the executor.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Top KPI Cards -->
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-3.5 mb-6">
+      <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-medium">Active Threads</div>
+        <div class="text-2xl font-bold text-emerald-400 mt-1">
+          {{ stats.activeThreads }} <span class="text-xs text-slate-500 font-normal">/ {{ stats.maxPoolSize }} max</span>
+        </div>
+        <div class="text-[11px] text-slate-400 mt-1">Core Size: {{ stats.corePoolSize }}</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-medium">Queue Occupancy</div>
+        <div class="text-2xl font-bold text-amber-400 mt-1">
+          {{ stats.currentQueueSize }} <span class="text-xs text-slate-500 font-normal">/ {{ stats.queueCapacity }} cap</span>
+        </div>
+        <div class="text-[11px] text-slate-400 mt-1">Remaining: {{ stats.queueRemainingCapacity }}</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-medium">Total Submitted</div>
+        <div class="text-2xl font-bold text-cyan-400 mt-1">{{ stats.totalSubmittedTasks }}</div>
+        <div class="text-[11px] text-slate-400 mt-1">Dispatched to Executor</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+        <div class="text-xs text-slate-400 font-medium">Completed Tasks</div>
+        <div class="text-2xl font-bold text-teal-300 mt-1">{{ stats.completedTasks }}</div>
+        <div class="text-[11px] text-slate-400 mt-1">Executed successfully</div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl col-span-2 md:col-span-1" 
+           :class="stats.rejectedTasks > 0 ? 'border-rose-900/60 bg-rose-950/20' : ''">
+        <div class="text-xs font-medium" :class="stats.rejectedTasks > 0 ? 'text-rose-400' : 'text-slate-400'">
+          Rejected Tasks
+        </div>
+        <div class="text-2xl font-bold mt-1" :class="stats.rejectedTasks > 0 ? 'text-rose-400' : 'text-slate-400'">
+          {{ stats.rejectedTasks }}
+        </div>
+        <div class="text-[11px] text-slate-400 mt-1">Queue & Pool Saturated</div>
+      </div>
+    </div>
+
+    <!-- Interactive Simulation Controls -->
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-8">
+      <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider mb-4">
+        Simulate Concurrency Bursts
+      </h2>
+      <div class="flex flex-wrap items-center gap-3">
+        <button @click="submitTasks(1)" :disabled="submitting"
+                class="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium text-sm transition shadow-sm shadow-emerald-950">
+          + Submit 1 Task (Normal)
+        </button>
+
+        <button @click="submitTasks(3)" :disabled="submitting"
+                class="px-4 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium text-sm transition shadow-sm shadow-indigo-950">
+          + Submit 3 Tasks Burst (Fills Queue)
+        </button>
+
+        <button @click="submitTasks(10)" :disabled="submitting"
+                class="px-4 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-medium text-sm transition shadow-sm shadow-rose-950 flex items-center gap-2">
+          <span>⚡ Submit 10 Tasks Burst (Trigger Overload)</span>
+        </button>
+
+        <div class="flex items-center gap-2 ml-auto text-xs text-slate-400">
+          <label>Workload Duration:</label>
+          <select v-model.number="taskDuration" class="bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-slate-200">
+            <option :value="2">2 seconds</option>
+            <option :value="4">4 seconds (default)</option>
+            <option :value="7">7 seconds (slow)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Grid: Active Threads + Live Tasks Queue -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      
+      <!-- Thread Pool Workers Panel -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">
+            Worker Threads (Max: 4)
+          </h2>
+          <span class="text-xs font-mono text-emerald-400">{{ activeThreadList.length }} active</span>
+        </div>
+
+        <div class="space-y-3">
+          <div v-for="w in 4" :key="w" 
+               class="p-3.5 rounded-lg border transition-all duration-300"
+               :class="getWorkerStatus(w).busy 
+                 ? 'bg-emerald-950/20 border-emerald-500/40 shadow-sm shadow-emerald-950' 
+                 : 'bg-slate-950/40 border-slate-800/80 opacity-60'">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2.5">
+                <span class="w-2.5 h-2.5 rounded-full" 
+                      :class="getWorkerStatus(w).busy ? 'bg-emerald-400 anim-pulse' : 'bg-slate-600'"></span>
+                <span class="font-mono text-xs font-semibold text-slate-200">
+                  worker-thread-{{ w }}
+                </span>
+                <span v-if="w > 2" class="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950/60 text-cyan-400 border border-cyan-800">
+                  Max-Pool Extra
+                </span>
+                <span v-else class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-800">
+                  Core
+                </span>
+              </div>
+              <span class="text-xs font-mono" 
+                    :class="getWorkerStatus(w).busy ? 'text-emerald-400' : 'text-slate-500'">
+                {{ getWorkerStatus(w).busy ? 'RUNNING' : 'IDLE' }}
+              </span>
+            </div>
+
+            <!-- Thread Task details if busy -->
+            <div v-if="getWorkerStatus(w).busy" class="mt-2.5 pt-2 border-t border-emerald-950 text-xs">
+              <div class="flex justify-between text-slate-300 text-[11px] mb-1">
+                <span>Task: <b class="text-emerald-300">{{ getWorkerStatus(w).task.taskId }}</b></span>
+                <span>{{ getWorkerStatus(w).task.progress }}%</span>
+              </div>
+              <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                <div class="bg-emerald-400 h-1.5 transition-all duration-200" 
+                     :style="{ width: getWorkerStatus(w).task.progress + '%' }"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Rejection Notice Banner -->
+        <div v-if="stats.rejectedTasks > 0" class="mt-4 p-3 rounded-lg bg-rose-950/40 border border-rose-800 text-xs text-rose-300">
+          <div class="font-bold flex items-center gap-1.5 mb-1">
+            <span>⚠️</span> Task Rejection Triggered!
+          </div>
+          <p class="text-slate-300 text-[11px]">
+            The internal queue of {{ stats.queueCapacity }} tasks was full and all {{ stats.maxPoolSize }} threads were occupied. 
+            The custom <code>RejectedExecutionHandler</code> intercepted the overflow.
+          </p>
+        </div>
+      </div>
+
+      <!-- Live Tasks Feed -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 lg:col-span-2 flex flex-col">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">
+            Live Task Pipeline ({{ tasks.length }})
+          </h2>
+          <span class="text-xs text-slate-400">Real-time SSE events</span>
+        </div>
+
+        <div v-if="tasks.length === 0" class="flex-1 flex flex-col items-center justify-center py-12 text-slate-500 text-sm">
+          <svg class="w-10 h-10 mb-2 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+          No tasks running yet. Click a button above to dispatch tasks!
+        </div>
+
+        <div v-else class="space-y-3 overflow-y-auto max-h-[500px] pr-1">
+          <div v-for="t in tasks" :key="t.taskId" 
+               class="p-3.5 rounded-lg border text-xs transition"
+               :class="getTaskCardClass(t.status)">
+            <div class="flex items-center justify-between mb-1.5">
+              <div class="flex items-center gap-2">
+                <span class="font-mono font-bold text-slate-200">{{ t.taskId }}</span>
+                <span class="px-2 py-0.5 rounded text-[10px] font-mono font-semibold" :class="getStatusBadgeClass(t.status)">
+                  {{ t.status }}
+                </span>
+                <span v-if="t.threadName && t.threadName !== 'N/A'" class="text-slate-400 text-[11px] font-mono">
+                  ➜ {{ t.threadName }}
+                </span>
+              </div>
+              <span class="font-mono text-slate-300 font-semibold">{{ t.progress }}%</span>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden my-2">
+              <div class="h-1.5 transition-all duration-300"
+                   :class="getProgressBarClass(t.status)"
+                   :style="{ width: t.progress + '%' }"></div>
+            </div>
+
+            <div class="text-[11px] text-slate-400 flex items-center justify-between">
+              <span>{{ t.message }}</span>
+              <span class="text-slate-500">{{ formatTime(t.timestamp) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    const { createApp, ref, reactive, computed, onMounted, onUnmounted } = Vue;
+
+    createApp({
+      setup() {
+        const connected = ref(false);
+        const submitting = ref(false);
+        const taskDuration = ref(4);
+        const showDocs = ref(true);
+
+        const stats = reactive({
+          activeThreads: 0,
+          corePoolSize: 2,
+          maxPoolSize: 4,
+          poolSize: 0,
+          queueCapacity: 4,
+          queueRemainingCapacity: 4,
+          currentQueueSize: 0,
+          completedTasks: 0,
+          rejectedTasks: 0,
+          totalSubmittedTasks: 0
+        });
+
+        const tasks = ref([]);
+        let eventSource = null;
+
+        const connectSSE = () => {
+          if (eventSource) {
+            eventSource.close();
+          }
+
+          eventSource = new EventSource('/api/stream');
+
+          eventSource.addEventListener('open', () => {
+            connected.value = true;
+          });
+
+          eventSource.addEventListener('connected', () => {
+            connected.value = true;
+          });
+
+          eventSource.addEventListener('pool-stats', (e) => {
+            try {
+              const data = JSON.parse(e.data);
+              Object.assign(stats, data);
+            } catch (err) {
+              console.error('Error parsing pool stats:', err);
+            }
+          });
+
+          eventSource.addEventListener('task-update', (e) => {
+            try {
+              const taskEvent = JSON.parse(e.data);
+              updateTask(taskEvent);
+            } catch (err) {
+              console.error('Error parsing task update:', err);
+            }
+          });
+
+          eventSource.onerror = () => {
+            connected.value = false;
+          };
+        };
+
+        const updateTask = (taskEvent) => {
+          const index = tasks.value.findIndex(t => t.taskId === taskEvent.taskId);
+          if (index !== -1) {
+            tasks.value[index] = { ...tasks.value[index], ...taskEvent };
+          } else {
+            tasks.value.unshift(taskEvent);
+          }
+        };
+
+        const submitTasks = async (count) => {
+          submitting.value = true;
+          try {
+            await fetch(`/api/tasks?count=${count}&duration=${taskDuration.value}`, {
+              method: 'POST'
+            });
+          } catch (e) {
+            console.error('Failed to submit tasks:', e);
+          } finally {
+            submitting.value = false;
+          }
+        };
+
+        const resetStats = async () => {
+          try {
+            await fetch('/api/reset', { method: 'POST' });
+          } catch (e) {
+            console.error('Failed to reset:', e);
+          }
+        };
+
+        const clearFinishedTasks = () => {
+          tasks.value = tasks.value.filter(t => t.status === 'RUNNING' || t.status === 'QUEUED');
+        };
+
+        const activeThreadList = computed(() => {
+          return tasks.value.filter(t => t.status === 'RUNNING');
+        });
+
+        const getWorkerStatus = (workerNum) => {
+          const threadName = `worker-thread-${workerNum}`;
+          const currentTask = tasks.value.find(t => t.threadName === threadName && t.status === 'RUNNING');
+          return {
+            busy: !!currentTask,
+            task: currentTask || null
+          };
+        };
+
+        const getTaskCardClass = (status) => {
+          if (status === 'RUNNING') return 'bg-slate-950/80 border-emerald-500/40';
+          if (status === 'COMPLETED') return 'bg-slate-950/40 border-slate-800/80 opacity-75';
+          if (status === 'REJECTED') return 'bg-rose-950/20 border-rose-800/60';
+          return 'bg-slate-950/60 border-amber-500/30';
+        };
+
+        const getStatusBadgeClass = (status) => {
+          if (status === 'RUNNING') return 'bg-emerald-950 text-emerald-400 border border-emerald-800';
+          if (status === 'COMPLETED') return 'bg-teal-950 text-teal-400 border border-teal-800';
+          if (status === 'REJECTED') return 'bg-rose-950 text-rose-400 border border-rose-800';
+          return 'bg-amber-950 text-amber-400 border border-amber-800';
+        };
+
+        const getProgressBarClass = (status) => {
+          if (status === 'RUNNING') return 'bg-gradient-to-r from-emerald-500 to-teal-400';
+          if (status === 'COMPLETED') return 'bg-teal-400';
+          if (status === 'REJECTED') return 'bg-rose-500';
+          return 'bg-amber-400';
+        };
+
+        const formatTime = (ts) => {
+          if (!ts) return '';
+          const d = new Date(ts);
+          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        };
+
+        onMounted(() => {
+          connectSSE();
+        });
+
+        onUnmounted(() => {
+          if (eventSource) eventSource.close();
+        });
+
+        return {
+          connected,
+          submitting,
+          taskDuration,
+          showDocs,
+          stats,
+          tasks,
+          submitTasks,
+          resetStats,
+          clearFinishedTasks,
+          activeThreadList,
+          getWorkerStatus,
+          getTaskCardClass,
+          getStatusBadgeClass,
+          getProgressBarClass,
+          formatTime
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
+
